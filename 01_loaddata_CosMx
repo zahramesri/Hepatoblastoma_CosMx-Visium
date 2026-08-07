@@ -1,0 +1,94 @@
+###############################################################################
+# CosMx SMI - Hepatoblastoma (Sindhi Cohort)
+# Script 01: Load
+
+# Description:
+#   Loads CosMx SMI data for All samples, separates negative control and system
+#   control probes into dedicated assays, merges all samples into a single
+#   Seurat object
+#
+# Input:  DecodedFiles/ directory (one subfolder per sample)
+# Output: Merged Seurat object
+###############################################################################
+
+# ── Libraries ─────────────────────────────────────────────────────────────────
+library(Seurat)
+library(data.table)
+library(future)
+
+# ── Paths (edit to match your environment) ────────────────────────────────────
+data_dir   <- "path/to/DecodedFiles" #directly downloaded from AtoMx 
+output_dir <- "path/to/output"
+
+# ── Sample manifest ────────────────────────────────────────────────────────────
+# subdir: path relative to data_dir for each sample's CellStatsDir
+samples <- data.frame(
+  key    = c("Hepatoblastoma1",
+             "Hepatoblastoma2",
+             "Hepatoblastoma3"),
+  subdir = c("Hepatoblastoma1/CellStatDir",
+             "Hepatoblastoma2/CellStatsDir",
+             "Hepatoblastoma3/CellStatsDir"),
+  stringsAsFactors = FALSE
+)
+
+# ── Load samples ───────────────────────────────────────────────────────────────
+# RNA targets determine the plexity of the panel.
+# Negative probes quantify non-specific binding.
+# System controls quantify spot-calling errors.
+HB_CosMx_list <- list()
+
+for (i in seq_len(nrow(samples))) {
+  key     <- samples$key[i]
+  cell_dir <- file.path(data_dir, samples$subdir[i])
+
+  obj <- LoadNanostring(data.dir = cell_dir, fov = key)
+
+  meta <- read.csv(file.path(cell_dir, paste0(key, "_metadata_file.csv.gz")))
+  rownames(meta) <- paste0(meta$cell_ID, "_", meta$fov)
+  obj  <- AddMetaData(obj, metadata = meta)
+
+  HB_CosMx_list[[key]] <- obj
+}
+
+# ── Separate negative and system control probes ────────────────────────────────
+
+for (name in names(HB_CosMx_list)) {
+  obj <- HB_CosMx_list[[name]]
+
+  if (any(grepl("Neg", rownames(obj@assays$Nanostring)))) {
+    neg_probes <- grep("Neg", rownames(obj@assays$Nanostring), value = TRUE)
+    obj[["NegProbes"]] <- CreateAssayObject(
+      counts = obj@assays$Nanostring$counts[neg_probes, ]
+    )
+    obj <- subset(obj, features = setdiff(rownames(obj@assays$Nanostring), neg_probes))
+  }
+
+  if (any(grepl("SystemControl", rownames(obj@assays$Nanostring)))) {
+    sysctrl_probes <- grep("SystemControl", rownames(obj@assays$Nanostring), value = TRUE)
+    obj[["SystemControls"]] <- CreateAssayObject(
+      counts = obj@assays$Nanostring$counts[sysctrl_probes, ]
+    )
+    obj <- subset(obj, features = setdiff(rownames(obj@assays$Nanostring), sysctrl_probes))
+  }
+
+  HB_CosMx_list[[name]] <- obj
+}
+
+save(HB_CosMx_list,
+     file = file.path(output_dir, "00_AllDataList.RData"))
+
+# ── Merge all samples ──────────────────────────────────────────────────────────
+options(future.globals.maxSize = 100 * 1024^3)
+
+HB_CosMx_merge <- merge(HB_CosMx_list[[1]],
+                        y           = HB_CosMx_list[2:length(HB_CosMx_list)],
+                        add.cell.ids = names(HB_CosMx_list),
+                        project     = "CosMx")
+
+save(HB_CosMx_merge,
+     file = file.path(output_dir, "00_AllDataMerge.RData"))
+# this object has been provided
+
+rm(HB_CosMx_list)
+gc()
